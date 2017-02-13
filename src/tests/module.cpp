@@ -21,6 +21,7 @@
 #include <stout/os.hpp>
 #include <stout/path.hpp>
 #include <stout/stringify.hpp>
+#include <stout/os/environment.hpp>
 
 #include "messages/messages.hpp"
 #include "module/manager.hpp"
@@ -125,6 +126,20 @@ static void addContainerLoggerModules(Modules* modules)
   moduleParameter = module->add_parameters();
   moduleParameter->set_key("logrotate_stdout_options");
   moduleParameter->set_value("rotate 4");
+
+  // Add the third container logger module
+  library = modules->add_libraries();
+  library->set_file(getModulePath("external_container_logger"));
+
+  addModule(library,
+            ExternalContainerLogger,
+            "org_apache_mesos_ExternalContainerLogger");
+
+  // Set the external logger to use the test bash script
+  module = library->mutable_modules(0);
+  moduleParameter = module->add_parameters();
+  moduleParameter->set_key("external_logger_binary");
+  moduleParameter->set_value(getTestScriptPath("container_logger_external.sh"));
 }
 
 

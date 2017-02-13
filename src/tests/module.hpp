@@ -52,6 +52,7 @@ enum ModuleID
   TestMasterContender,
   TestMasterDetector,
   LogrotateContainerLogger,
+  ExternalContainerLogger,
   TestHttpBasicAuthenticator
 };
 

@@ -100,8 +100,9 @@ namespace tests {
 #ifndef __WINDOWS__
 const char LOGROTATE_CONTAINER_LOGGER_NAME[] =
   "org_apache_mesos_LogrotateContainerLogger";
+const char EXTERNAL_CONTAINER_LOGGER_NAME[] =
+  "org_apache_mesos_ExternalContainerLogger";
 #endif // __WINDOWS__
-
 
 // Definition of a mock ContainerLogger to be used in tests with gmock.
 class MockContainerLogger : public ContainerLogger
@@ -774,6 +775,141 @@ TEST_P(UserContainerLoggerTest, ROOT_LOGROTATE_RotateWithSwitchUserTrueOrFalse)
   EXPECT_LE(2040u, stdoutSize->kilobytes());
   EXPECT_GE(2048u, stdoutSize->kilobytes());
 }
+
+// Test that the external container logger launches the supplied process
+// and receives the correct environment variables.
+TEST_F(ContainerLoggerTest, EXTERNAL_ReceiveEnvironment)
+  {
+    // Create a master, agent, and framework.
+    Try<Owned<cluster::Master>> master = StartMaster();
+    ASSERT_SOME(master);
+
+    Future<SlaveRegisteredMessage> slaveRegisteredMessage =
+    FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
+
+    // We'll need access to these flags later.
+    slave::Flags flags = CreateSlaveFlags();
+
+    // Use the non-default container logger that runs an external program.
+    flags.container_logger = EXTERNAL_CONTAINER_LOGGER_NAME;
+
+    Fetcher fetcher;
+
+    // We use an actual containerizer + executor since we want something to run.
+    Try<MesosContainerizer*> _containerizer =
+    MesosContainerizer::create(flags, false, &fetcher);
+
+    CHECK_SOME(_containerizer);
+    Owned<MesosContainerizer> containerizer(_containerizer.get());
+
+    Owned<MasterDetector> detector = master.get()->createDetector();
+
+    Try<Owned<cluster::Slave>> slave =
+    StartSlave(detector.get(), containerizer.get(), flags);
+    ASSERT_SOME(slave);
+
+    AWAIT_READY(slaveRegisteredMessage);
+    SlaveID slaveId = slaveRegisteredMessage.get().slave_id();
+
+    MockScheduler sched;
+    MesosSchedulerDriver driver(
+        &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
+
+    Future<FrameworkID> frameworkId;
+    EXPECT_CALL(sched, registered(&driver, _, _))
+    .WillOnce(FutureArg<1>(&frameworkId));
+
+    // Wait for an offer, and start a task.
+    Future<vector<Offer>> offers;
+    EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+    driver.start();
+    AWAIT_READY(frameworkId);
+
+    AWAIT_READY(offers);
+    EXPECT_NE(0u, offers.get().size());
+
+    // See container_logger_external.sh (defined in module.cpp) which fails
+    // with status 1 if the log environment is not set. This task provides
+    // some simple known log lines.
+    TaskInfo task = createTask(
+        offers.get()[0],
+        "echo \"Test stdout Log Line\" ; echo \"Test stderr Log Line\" 1>&2");
+
+    Future<TaskStatus> statusRunning;
+    Future<TaskStatus> statusFinished;
+    EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusRunning))
+    .WillOnce(FutureArg<1>(&statusFinished))
+    .WillRepeatedly(Return()); // Ignore subsequent updates.
+
+    driver.launchTasks(offers.get()[0].id(),
+          { task});
+
+    AWAIT_READY(statusRunning);
+    EXPECT_EQ(TASK_RUNNING, statusRunning.get().state());
+
+    AWAIT_READY(statusFinished);
+    EXPECT_EQ(TASK_FINISHED, statusFinished.get().state());
+
+    driver.stop();
+    driver.join();
+
+    // Like the logrotate logger, our script processes should have exited once
+    // our task finished (as they're just a bash while loop reading stdin).
+    Try<os::ProcessTree> pstrees = os::pstree(0);
+    ASSERT_SOME(pstrees);
+    foreach (const os::ProcessTree& pstree, pstrees.get().children)
+      {
+        // Wait for the logger subprocesses to exit, for up to 5 seconds each.
+        Duration waited = Duration::zero();
+        do
+          {
+            if (!os::exists(pstree.process.pid))
+              {
+                break;
+              }
+
+            // Push the clock ahead to speed up the reaping of subprocesses.
+            Clock::pause();
+            Clock::settle();
+            Clock::advance(Seconds(1));
+            Clock::resume();
+
+            os::sleep(Milliseconds(100));
+            waited += Milliseconds(100);
+          }while (waited < Seconds(5));
+
+        EXPECT_LE(waited, Seconds(5));
+      }
+
+    // Check for the expected file outputs from the test script logger.
+    string sandboxDirectory = path::join(
+        slave::paths::getExecutorPath(
+            flags.work_dir,
+            slaveId,
+            frameworkId.get(),
+            statusRunning->executor_id()),
+        "runs",
+        "latest");
+
+    ASSERT_TRUE(os::exists(sandboxDirectory));
+
+    // Test the logger script was happy with the STDOUT environment
+    // (see container_logger_external.sh)
+    string stdoutPath = path::join(sandboxDirectory, "STDOUT.log");
+    ASSERT_TRUE(os::exists(stdoutPath));
+    EXPECT_GT(os::stat::size(stdoutPath)->bytes(), 0u);
+
+    // Test the logger script was happy with the STDERR environment
+    // (see container_logger_external.sh)
+    string stderrPath = path::join(sandboxDirectory, "STDERR.log");
+    ASSERT_TRUE(os::exists(stderrPath));
+    EXPECT_GT(os::stat::size(stderrPath)->bytes(), 0u);
+  }
+
 #endif // __WINDOWS__
 
 } // namespace tests {

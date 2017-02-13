@@ -2088,6 +2088,14 @@ liblogrotate_container_logger_la_SOURCES =			\
 liblogrotate_container_logger_la_CPPFLAGS = $(MESOS_CPPFLAGS)
 liblogrotate_container_logger_la_LDFLAGS = $(MESOS_MODULE_LDFLAGS)
 
+# Library containing the external container logger.
+pkgmodule_LTLIBRARIES += libexternal_container_logger.la
+libexternal_container_logger_la_SOURCES =			\
+  slave/container_loggers/lib_externallogger.hpp			\
+  slave/container_loggers/lib_externallogger.cpp
+libexternal_container_logger_la_CPPFLAGS = $(MESOS_CPPFLAGS)
+libexternal_container_logger_la_LDFLAGS = $(MESOS_MODULE_LDFLAGS)
+
 # Library containing the fixed resource estimator.
 pkgmodule_LTLIBRARIES += libfixed_resource_estimator.la
 libfixed_resource_estimator_la_SOURCES = slave/resource_estimators/fixed.cpp
@@ -2433,7 +2441,8 @@ dist_check_SCRIPTS +=						\
   tests/persistent_volume_framework_test.sh			\
   tests/python_framework_test.sh				\
   tests/test_http_framework_test.sh				\
-  tests/test_framework_test.sh
+  tests/test_framework_test.sh                  \
+  tests/container_logger_external.sh
 
 ../3rdparty/libgmock.la:
 	@cd ../3rdparty && $(MAKE) $(AM_MAKEFLAGS) libgmock.la
