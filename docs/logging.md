@@ -60,12 +60,14 @@ can be used to change how Mesos redirects the stdout and stderr of containers.
 
 The [interface for a `ContainerLogger` can be found here](https://github.com/apache/mesos/blob/master/include/mesos/slave/container_logger.hpp).
 
-Mesos comes with two `ContainerLogger` modules:
+Mesos comes with three `ContainerLogger` modules:
 
 * The `SandboxContainerLogger` implements the existing logging behavior as
   a `ContainerLogger`.  This is the default behavior.
 * The `LogrotateContainerLogger` addresses the problem of unbounded log file
   sizes.
+* The `ExternalContainerLogger` allows executing a custom program to handle
+  logs passed to it via standard input.
 
 ### `LogrotateContainerLogger`
 
@@ -193,6 +195,135 @@ setting the `--container_logger` Agent flag to
 The `LogrotateContainerLogger` is designed to be resilient across Agent
 failover.  If the Agent process dies, any instances of `mesos-logrotate-logger`
 will continue to run.
+
+### `ExternalContainerLogger`
+
+The `ExternalContainerLogger` executes a process on the Mesos agent host in
+order to handle logs from a mesos task. The process is specified globally as
+part of the module configuration when the mesos agent is launched.
+
+One logger process is spawned for each unique log stream from a Mesos task, i.e.
+a process for stdout and stderr will be independantly spawned. Context
+information for the log process is provided by environment variables so the
+spawned process may determine how to handle logs (see below). Any valid host
+executable is allowed (e.g. an executable shell script is valid, and can be
+handy for debugging/development).
+
+#### Invoking the module
+
+The `ExternalContainerLogger` is invoked in the same way as the logrotate
+logger. Specify the library `libexternal_container_logger.so` in the
+[`--modules` flag](modules.md#Invoking)  when starting the Agent and by setting
+the `--container_logger` Agent flag to
+`org_apache_mesos_ExternalContainerLogger`.
+
+#### Module parameters
+
+<table class="table table-striped">
+  <thead>
+    <tr>
+      <th width="30%">
+        Key
+      </th>
+      <th>
+        Explanation
+      </th>
+    </tr>
+  </thead>
+
+  <tr>
+    <td>
+      <code>external_logger_binary</code>
+    </td>
+    <td>
+      Path to the external command which will read STDIN for logs.
+
+      Must be specified and must point to an existing executable file on the
+      host system.
+    </td>
+  </tr>
+
+  <tr>
+    <td>
+      <code>mesos_field_prefix</code>
+    </td>
+    <td>
+      Prefix to add to environment variables containing mesos task data passed
+      to the external logger process. This is used for "special" data which is
+      automatically exposed from executorInfo (currently
+      <code>SANDBOX_DIRECTORY</code> and <code>STREAM</code>).
+
+      Defaults to <code>MESOS_LOG_</code>.
+    </td>
+  </tr>
+
+  <tr>
+    <td>
+      <code>stream_name_field</code>
+    </td>
+    <td>
+      Name of the field to store the stdout/stderr stream identifier under.
+
+      Defaults to <code>STREAM</code>.
+
+      Example: with default settings, this would produce the environment
+      variable <code>MESOS_LOG_STREAM</code>.
+
+      Values of this field can be <code>STDOUT</code> and <code>STDERR</core>.
+    </td>
+  </tr>
+
+  <tr>
+    <td>
+      <code>executor_info_json_field</code>
+    </td>
+    <td>
+      Name of the environment variable to store the JSON protocol buffer of the
+      Mesos task's ExecutorInfo. This is probably the easiest field to consume
+      for external processes.
+
+      Defaults to <code>MESOS_EXECUTORINFO_JSON</code>.
+
+      Note: this field is prefixed by the value of mesos_field_prefix as well,
+      so the result of the default value is <code>MESOS_LOG_MESOS_EXECUTORINFO_JSON</code>.
+    </td>
+  </tr>
+</table>
+
+#### How it works
+
+This module is very similar to the logrotate logger, but allows using a custom
+user specified process and receives more context about the process being logged.
+
+On container startup, the `ExternalContainerLogger` spawns two processes with
+the command specified by `external_logger_cmd` and passes the context to
+via environment variables.
+
+With default parameters these will be:
+ * `MESOS_LOG_STREAM`
+ * `MESOS_LOG_SANDBOX_DIRECTORY`
+ * `MESOS_LOG_USER`
+ * `MESOS_EXECUTORINFO_JSON`
+
+`MESOS_LOG_USER` may or may not be present depending on if the Mesos Task
+has specified to run as a different user. It's presence should be checked for
+and reacted to appropriately (i.e. there is no requirement to switch to this
+user, but a logging script or program may wish to do so to allow access to
+files).
+
+`MESOS_LOG_STREAM` will contain either `STDOUT` or `STDERR` to indicate which
+log stream is being received on standard input. The other environment variables
+will be the same between both processes. Note: no environment is passed from
+the mesos-agent to the spawned logger process - this includes standard
+environment variables like `PATH`. Any setup script for logging, or process,
+should configure these variables itself to the necessary values.
+
+All logging is then the responsibility of the spawned process.
+
+It is worth noting that no method is provided to pass command line to the
+spawned process, as it is possible to pass an executable wrapper script to
+accomplish arbitrary setup and tear down before exec'ing the real logging
+process.
 
 ### Writing a Custom `ContainerLogger`
 
